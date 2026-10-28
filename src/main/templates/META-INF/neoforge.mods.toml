@@ -31,12 +31,12 @@ authors="GCTN Team"
 
 # The description text for the mod (multi line!) (#mandatory)
 description='''
-Example mod description.
+Connect AI agents to a real Minecraft client through MCP. Inspect game data,
+capture screenshots, and test native player, inventory and GUI interactions.
 '''
+displayTest="IGNORE_ALL_VERSION"
 
 # The [[mixins]] block allows you to declare your mixin config to FML so that it gets loaded.
-[[mixins]]
-config="${mod_id}.mixins.json"
 
 # The [[accessTransformers]] block allows you to declare where your AT file is.
 # If this block is omitted, a fallback attempt will be made to load an AT from META-INF/accesstransformer.cfg
