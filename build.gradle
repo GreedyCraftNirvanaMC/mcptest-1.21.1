@@ -115,6 +115,8 @@ configurations {
 }
 
 dependencies {
+    // Reuse Minecraft's bundled Gson for the standalone protocol harness; no JUnit or new runtime library.
+    testImplementation 'com.google.code.gson:gson:2.10.1'
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
     // compileOnly "mezz.jei:jei-${mc_version}-common-api:${jei_version}"
@@ -179,6 +181,16 @@ publishing {
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
 }
+
+// A standalone loopback protocol test: no Minecraft process and no additional test dependencies.
+tasks.register('transportTest', JavaExec) {
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.gctn.mcptest.mcp.McpServerTest'
+    systemProperty 'mcptest.test.temp', providers.systemProperty('mcptest.test.temp').getOrElse(layout.buildDirectory.dir('tmp').get().asFile.absolutePath)
+}
+tasks.named('test') { enabled = false } // The test source is an executable harness, not a JUnit suite.
+tasks.named('check') { dependsOn tasks.named('transportTest') }
 
 // IDEA no longer automatically downloads sources/javadoc jars for dependencies, so we need to explicitly enable the behavior.
 idea {

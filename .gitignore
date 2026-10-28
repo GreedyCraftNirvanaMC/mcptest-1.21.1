@@ -38,3 +38,6 @@ run/
 **/src/generated/**/.cache/
 repo/
 !**/src/**/repo/
+
+# Generated local MCP credential (development normally uses the ignored run directory).
+/config/mcptest.json
