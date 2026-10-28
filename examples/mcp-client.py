@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Make one MCP request to a local MCP Test client using only Python's standard library."""
+"""Make one MCP request to a localhost or LAN MCP Test client using Python's standard library."""
 
 import argparse
 import base64
 import binascii
 import http.client
+import ipaddress
 import json
 import re
 import sys
@@ -15,8 +16,27 @@ class McpError(Exception):
     """A connection, protocol, or tool failure safe to print without credentials."""
 
 
+def connection_host(host):
+    """Accept only literal IPv4 destinations within the server's LAN address policy."""
+    try:
+        address = ipaddress.IPv4Address(host)
+    except ipaddress.AddressValueError as error:
+        raise McpError("--host must be a literal IPv4 loopback, private LAN, or link-local address") from error
+    allowed = any(address in network for network in (
+        ipaddress.IPv4Network("127.0.0.0/8"),
+        ipaddress.IPv4Network("10.0.0.0/8"),
+        ipaddress.IPv4Network("172.16.0.0/12"),
+        ipaddress.IPv4Network("192.168.0.0/16"),
+        ipaddress.IPv4Network("169.254.0.0/16"),
+    ))
+    if not allowed:
+        raise McpError("--host must be a concrete loopback, private LAN, or link-local IPv4 address; wildcard and public addresses are not supported")
+    return str(address)
+
+
 class MinecraftClient:
-    def __init__(self, config_path):
+    def __init__(self, config_path, host="127.0.0.1"):
+        self.host = connection_host(host)
         try:
             config = json.loads(config_path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError) as error:
@@ -50,7 +70,7 @@ class MinecraftClient:
             headers["Mcp-Protocol-Version"] = self.version
         body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
         # Direct connection avoids proxies and redirects carrying local credentials elsewhere.
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=self.timeout)
+        connection = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
         try:
             connection.request(method, "/mcp", body=body, headers=headers)
             response = connection.getresponse()
@@ -63,15 +83,15 @@ class MinecraftClient:
             try:
                 document = json.loads(raw) if raw else None
             except (ValueError, UnicodeDecodeError) as error:
-                raise McpError("The local endpoint returned invalid JSON") from error
+                raise McpError("The MCP endpoint returned invalid JSON") from error
             if response.status >= 400:
                 error = document.get("error") if isinstance(document, dict) else None
                 detail = error.get("message", "") if isinstance(error, dict) else ""
                 raise McpError("HTTP {}: {}".format(response.status, detail or response.reason))
             return document
         except (OSError, http.client.HTTPException) as error:
-            raise McpError("Cannot reach the MCP Test client at 127.0.0.1:{} ({})".format(
-                self.port, type(error).__name__)) from error
+            raise McpError("Cannot reach the MCP Test client at {}:{} ({})".format(
+                self.host, self.port, type(error).__name__)) from error
         finally:
             connection.close()
 
@@ -157,6 +177,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("run/config/mcptest.json"),
                         help="Minecraft's config/mcptest.json (default: run/config/mcptest.json)")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="Minecraft computer's IPv4 loopback or LAN address (default: 127.0.0.1)")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--list", action="store_true", help="Print the tool catalog")
     selection.add_argument("--tool", default="minecraft_status", help="Tool name (default: minecraft_status)")
@@ -175,7 +197,7 @@ def main():
     client = None
     exit_code = 0
     try:
-        client = MinecraftClient(options.config)
+        client = MinecraftClient(options.config, options.host)
         client.initialize()
         result = client.request("tools/list", {}) if options.list else client.request(
             "tools/call", {"name": options.tool, "arguments": arguments})

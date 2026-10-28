@@ -14,11 +14,12 @@ import java.nio.file.StandardCopyOption;
 import java.security.SecureRandom;
 import java.util.Base64;
 
-/** Local connection settings. The token is a secret and must never be logged. */
-public record BridgeConfig(boolean enabled, int port, String bearerToken, int requestTimeoutSeconds) {
+/** Connection settings. LAN binding is explicit; the token must never be logged. */
+public record BridgeConfig(boolean enabled, int port, String bearerToken, int requestTimeoutSeconds, String bindAddress) {
     private static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
 
     public BridgeConfig {
+        NetworkAccess.bindAddress(bindAddress);
         if (port < 1024 || port > 65535) {
             throw new IllegalArgumentException("port must be between 1024 and 65535");
         }
@@ -28,6 +29,10 @@ public record BridgeConfig(boolean enabled, int port, String bearerToken, int re
         if (requestTimeoutSeconds < 1 || requestTimeoutSeconds > 120) {
             throw new IllegalArgumentException("requestTimeoutSeconds must be between 1 and 120");
         }
+    }
+
+    public BridgeConfig(boolean enabled, int port, String bearerToken, int requestTimeoutSeconds) {
+        this(enabled, port, bearerToken, requestTimeoutSeconds, "127.0.0.1");
     }
 
     public static BridgeConfig load(Path gameConfigDir) throws IOException {
@@ -45,12 +50,13 @@ public record BridgeConfig(boolean enabled, int port, String bearerToken, int re
             }
         }
         boolean missing = !json.has("enabled") || !json.has("port")
-                || !json.has("bearerToken") || !json.has("requestTimeoutSeconds");
+                || !json.has("bearerToken") || !json.has("requestTimeoutSeconds") || !json.has("bindAddress");
         BridgeConfig config;
         try {
             config = new BridgeConfig(bool(json, "enabled", true), integer(json, "port", 8765),
-                    json.has("bearerToken") ? string(json.get("bearerToken")) : newToken(),
-                    integer(json, "requestTimeoutSeconds", 30));
+                    json.has("bearerToken") ? string(json.get("bearerToken"), "bearerToken") : newToken(),
+                    integer(json, "requestTimeoutSeconds", 30),
+                    json.has("bindAddress") ? string(json.get("bindAddress"), "bindAddress") : "127.0.0.1");
         } catch (RuntimeException e) {
             // Do not include the input object: it contains the bearer token.
             throw new IOException("Invalid mcptest.json: " + e.getMessage());
@@ -77,9 +83,9 @@ public record BridgeConfig(boolean enabled, int port, String bearerToken, int re
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
-    private static String string(JsonElement value) {
+    private static String string(JsonElement value, String field) {
         if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) {
-            throw new IllegalArgumentException("bearerToken must be a string");
+            throw new IllegalArgumentException(field + " must be a string");
         }
         return value.getAsString();
     }
@@ -108,7 +114,7 @@ public record BridgeConfig(boolean enabled, int port, String bearerToken, int re
 
     @Override
     public String toString() {
-        return "BridgeConfig[enabled=" + enabled + ", port=" + port
+        return "BridgeConfig[enabled=" + enabled + ", bindAddress=" + bindAddress + ", port=" + port
                 + ", bearerToken=<redacted>, requestTimeoutSeconds=" + requestTimeoutSeconds + "]";
     }
 }
