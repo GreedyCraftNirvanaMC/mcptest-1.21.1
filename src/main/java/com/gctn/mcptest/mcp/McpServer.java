@@ -15,7 +15,6 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
@@ -47,6 +46,7 @@ public final class McpServer implements AutoCloseable {
     private static final Gson JSON = new GsonBuilder().serializeNulls().create();
 
     private final BridgeConfig config;
+    private final InetAddress bindAddress;
     private final McpTools tools;
     private final JsonArray catalog;
     private final Set<String> toolNames;
@@ -64,6 +64,7 @@ public final class McpServer implements AutoCloseable {
 
     public McpServer(BridgeConfig config, McpTools tools) {
         this.config = config;
+        this.bindAddress = NetworkAccess.bindAddress(config.bindAddress());
         this.tools = tools;
         this.catalog = tools.listTools().deepCopy();
         this.toolNames = catalog.asList().stream().map(e -> e.getAsJsonObject().get("name").getAsString())
@@ -73,7 +74,7 @@ public final class McpServer implements AutoCloseable {
     public synchronized void start() throws IOException {
         if (closed || server != null) throw new IllegalStateException("MCP server has already started or closed");
         if (!config.enabled()) return;
-        HttpServer http = HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), config.port()), 16);
+        HttpServer http = HttpServer.create(new InetSocketAddress(bindAddress, config.port()), 16);
         http.createContext("/mcp", this::handle);
         http.setExecutor(workers);
         server = http;
@@ -97,8 +98,8 @@ public final class McpServer implements AutoCloseable {
                 respond(exchange, 404, error(null, -32600, "Unknown endpoint"));
                 return;
             }
-            if (!validLocalRequest(exchange)) {
-                respond(exchange, 403, error(null, -32600, "Only local requests with a trusted Host and Origin are allowed"));
+            if (!validNetworkRequest(exchange)) {
+                respond(exchange, 403, error(null, -32600, "Peer, Host or Origin is not allowed by the configured loopback/LAN listener"));
                 return;
             }
             if (!authorized(exchange)) {
@@ -384,23 +385,13 @@ public final class McpServer implements AutoCloseable {
                 authorization.substring(7).getBytes(StandardCharsets.UTF_8));
     }
 
-    private boolean validLocalRequest(HttpExchange exchange) {
-        if (!exchange.getRemoteAddress().getAddress().isLoopbackAddress()) return false;
-        String host = exchange.getRequestHeaders().getFirst("Host");
-        if (!("127.0.0.1:" + config.port()).equals(host)
-                && !("localhost:" + config.port()).equalsIgnoreCase(host)) return false;
-        String origin = exchange.getRequestHeaders().getFirst("Origin");
-        if (origin == null) return true; // Native MCP clients normally send no Origin.
-        try {
-            URI uri = URI.create(origin);
-            return "http".equalsIgnoreCase(uri.getScheme())
-                    && ("127.0.0.1".equals(uri.getHost()) || "localhost".equalsIgnoreCase(uri.getHost()))
-                    && uri.getPort() == config.port() && uri.getRawUserInfo() == null
-                    && uri.getRawQuery() == null && uri.getRawFragment() == null
-                    && (uri.getRawPath().isEmpty() || uri.getRawPath().equals("/"));
-        } catch (RuntimeException e) {
-            return false;
-        }
+    private boolean validNetworkRequest(HttpExchange exchange) {
+        var hosts = exchange.getRequestHeaders().get("Host");
+        var origins = exchange.getRequestHeaders().get("Origin");
+        if (hosts == null || hosts.size() != 1 || (origins != null && origins.size() != 1)) return false;
+        return NetworkAccess.allows(bindAddress, exchange.getRemoteAddress().getAddress(),
+                exchange.getLocalAddress().getAddress(), config.port(), hosts.getFirst(),
+                origins == null ? null : origins.getFirst());
     }
 
     private static JsonElement parseStrict(byte[] bytes) throws IOException {

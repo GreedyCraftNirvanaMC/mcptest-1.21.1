@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.io.IOException;
 import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URI;
@@ -29,6 +30,8 @@ public final class McpServerTest {
 
     public static void main(String[] arguments) throws Exception {
         configChecks();
+        networkPolicyChecks();
+        lanChecks();
         int port;
         try (ServerSocket socket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
             port = socket.getLocalPort();
@@ -134,9 +137,18 @@ public final class McpServerTest {
         try {
             BridgeConfig first = BridgeConfig.load(directory);
             check(first.port() == 8765 && first.enabled(), "config defaults");
+            check(first.bindAddress().equals("127.0.0.1"), "new configs stay loopback-only");
             check(first.bearerToken().length() >= 32, "secure generated token length");
             check(BridgeConfig.load(directory).bearerToken().equals(first.bearerToken()), "token persists");
             check(!first.toString().contains(first.bearerToken()), "config string redacts token");
+            Files.writeString(directory.resolve("mcptest.json"), "{\"enabled\":false,\"port\":9001,\"bearerToken\":\"" + TOKEN + "\",\"requestTimeoutSeconds\":9}");
+            BridgeConfig migrated = BridgeConfig.load(directory);
+            check(migrated.bindAddress().equals("127.0.0.1") && !migrated.enabled() && migrated.port() == 9001
+                    && migrated.requestTimeoutSeconds() == 9 && migrated.bearerToken().equals(TOKEN), "legacy config migration preserves credentials and settings");
+            check(JsonParser.parseString(Files.readString(directory.resolve("mcptest.json"))).getAsJsonObject()
+                    .get("bindAddress").getAsString().equals("127.0.0.1"), "migration persists loopback default");
+            Files.writeString(directory.resolve("mcptest.json"), "{\"bindAddress\":\"0.0.0.0\",\"bearerToken\":\"" + TOKEN + "\"}");
+            check(BridgeConfig.load(directory).bindAddress().equals("0.0.0.0") && BridgeConfig.load(directory).bearerToken().equals(TOKEN), "LAN config persists without changing token");
             Files.writeString(directory.resolve("mcptest.json"), "{\"port\":1234.5}");
             boolean rejected = false;
             try { BridgeConfig.load(directory); } catch (IOException expected) { rejected = true; }
@@ -145,6 +157,67 @@ public final class McpServerTest {
             Files.deleteIfExists(directory.resolve("mcptest.json"));
             Files.deleteIfExists(directory);
         }
+    }
+
+    private static void networkPolicyChecks() throws IOException {
+        InetAddress loopback = InetAddress.getByName("127.0.0.1");
+        InetAddress wildcard = NetworkAccess.bindAddress("0.0.0.0");
+        InetAddress local = InetAddress.getByName("192.168.1.10");
+        InetAddress peer = InetAddress.getByName("192.168.1.20");
+        int port = 8765;
+        check(NetworkAccess.allows(wildcard, peer, local, port, "192.168.1.10:8765", null), "private LAN peer allowed with wildcard bind");
+        check(NetworkAccess.allows(local, peer, local, port, "192.168.1.10:8765", "http://192.168.1.10:8765"), "specific NIC bind and matching Origin allowed");
+        check(NetworkAccess.allows(wildcard, loopback, loopback, port, "localhost:8765", "http://localhost:8765"), "wildcard listener preserves local clients");
+        check(!NetworkAccess.allows(loopback, peer, local, port, "192.168.1.10:8765", null), "loopback mode cannot admit LAN peers");
+        check(!NetworkAccess.allows(local, peer, InetAddress.getByName("192.168.1.11"), port, "192.168.1.11:8765", null), "specific bind cannot admit another interface");
+        check(!NetworkAccess.allows(wildcard, InetAddress.getByName("8.8.8.8"), local, port, "192.168.1.10:8765", null), "public peer rejected");
+        check(!NetworkAccess.allows(wildcard, peer, InetAddress.getByName("8.8.8.8"), port, "8.8.8.8:8765", null), "wildcard listener rejects public NIC access");
+        for (String host : List.of("evil.example:8765", "192.168.1.11:8765", "0.0.0.0:8765", "127.0.0.1:8765", "localhost:8765", "192.168.1.10:9999")) {
+            check(!NetworkAccess.allows(wildcard, peer, local, port, host, null), "untrusted LAN Host rejected: " + host);
+        }
+        for (String origin : List.of("https://evil.example", "null", "http://192.168.1.20:8765", "http://192.168.1.10:9999", "http://user@192.168.1.10:8765", "http://192.168.1.10:8765/path", "http://192.168.1.10:8765?x=1")) {
+            check(!NetworkAccess.allows(wildcard, peer, local, port, "192.168.1.10:8765", origin), "untrusted LAN Origin rejected: " + origin);
+        }
+        for (String address : List.of("10.0.0.1", "172.16.0.1", "172.31.255.254", "192.168.2.3", "169.254.10.20", "127.0.0.2")) {
+            check(NetworkAccess.isLocalPeer(NetworkAccess.bindAddress(address)), "supported local IPv4 range: " + address);
+        }
+        for (String address : List.of("8.8.8.8", "172.15.1.2", "172.32.1.2", "100.64.0.1", "224.0.0.1", "localhost", "127.1", "192.168.001.1", "256.0.0.1", "::1", "http://192.168.1.1", "")) {
+            boolean rejected = false;
+            try { NetworkAccess.bindAddress(address); } catch (IllegalArgumentException expected) { rejected = true; }
+            check(rejected, "invalid/public bind rejected: " + address);
+        }
+    }
+
+    private static void lanChecks() throws Exception {
+        List<InetAddress> privateInterfaces = NetworkInterface.networkInterfaces().filter(network -> {
+            try { return network.isUp(); } catch (IOException exception) { return false; }
+        }).flatMap(NetworkInterface::inetAddresses).filter(address -> NetworkAccess.isLocalPeer(address) && !address.isLoopbackAddress()).toList();
+        // Exercise wildcard binding even on CI hosts without a private network interface.
+        InetAddress target = privateInterfaces.isEmpty() ? InetAddress.getByName("127.0.0.1") : privateInterfaces.getFirst();
+        for (String bind : List.of("0.0.0.0", target.getHostAddress())) {
+            int port;
+            try (ServerSocket socket = new ServerSocket(0, 1, target)) { port = socket.getLocalPort(); }
+            FakeTools tools = new FakeTools();
+            try (McpServer server = new McpServer(new BridgeConfig(true, port, TOKEN, 1, bind), tools);
+                    HttpClient client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(Duration.ofSeconds(3)).build()) {
+                server.start();
+                Fixture test = new Fixture(client, port, target.getHostAddress());
+                check(test.send("{}", null, VERSION, null, null, "POST").statusCode() == 401, "LAN bind still requires authentication");
+                check(test.send("{}", null, VERSION, "https://evil.example", TOKEN, "POST").statusCode() == 403, "LAN bind still rejects hostile Origins");
+                HttpResponse<String> init = test.send(initialize(VERSION), null, VERSION, "http://" + target.getHostAddress() + ":" + port, TOKEN, "POST");
+                check(init.statusCode() == 200, "authenticated initialization through configured interface");
+                String session = init.headers().firstValue("Mcp-Session-Id").orElseThrow();
+                test.rpc("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}", session);
+                check(!object(test.rpc(call(2, "echo", "{}"), session)).getAsJsonObject("result").get("isError").getAsBoolean(), "tool calls work through configured interface");
+                CompletableFuture<HttpResponse<String>> active = test.async(call(3, "hold", "{}"), session);
+                CompletableFuture<JsonObject> execution = tools.held.poll(3, TimeUnit.SECONDS);
+                check(execution != null, "LAN call started before session cleanup");
+                check(test.send(null, session, VERSION, null, TOKEN, "DELETE").statusCode() == 204, "LAN session deletion succeeds");
+                check(active.get(3, TimeUnit.SECONDS).statusCode() == 204 && execution.isCancelled(), "LAN cleanup cancels pending work");
+            }
+        }
+        System.out.println(privateInterfaces.isEmpty() ? "No private IPv4 interface: LAN address socket checks used loopback; policy checks still ran."
+                : "LAN socket checks passed through " + target.getHostAddress() + " (same-machine connection, not a second device).");
     }
 
     private static String badHost(int port) throws IOException {
@@ -178,7 +251,8 @@ public final class McpServerTest {
         checks++;
     }
 
-    private record Fixture(HttpClient client, int port) {
+    private record Fixture(HttpClient client, int port, String host) {
+        Fixture(HttpClient client, int port) { this(client, port, "127.0.0.1"); }
         HttpResponse<String> rpc(String body, String session) throws IOException, InterruptedException {
             return send(body, session, VERSION, null, TOKEN, "POST");
         }
@@ -192,7 +266,7 @@ public final class McpServerTest {
         }
 
         HttpRequest request(String body, String session, String version, String origin, String token, String method) {
-            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/mcp"))
+            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create("http://" + host + ":" + port + "/mcp"))
                     .timeout(Duration.ofSeconds(5)).header("Content-Type", "application/json")
                     .header("Accept", "application/json, text/event-stream");
             if (session != null) builder.header("Mcp-Session-Id", session);

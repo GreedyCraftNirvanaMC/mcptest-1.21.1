@@ -38,18 +38,27 @@ An MCP client's configuration may use this shape; the exact wrapper depends on t
 }
 ```
 
-The endpoint binds only to IPv4 loopback. The bearer token grants control of the local game; keep it out of commits, shared logs, and prompts. Use the same machine as Minecraft. The transport returns JSON over HTTP, without a persistent SSE stream or a legacy SSE endpoint. Supported MCP revisions are `2025-11-25` and `2025-06-18`.
+The endpoint defaults to IPv4 loopback, so initial access is from the same machine as Minecraft. LAN access is opt-in as described below. The bearer token grants control of the game; keep it out of commits, shared logs, and prompts. The transport returns JSON over HTTP, without a persistent SSE stream or a legacy SSE endpoint. Supported MCP revisions are `2025-11-25` and `2025-06-18`.
 
 Configuration is read at client startup:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Start the MCP listener. |
-| `port` | `8765` | Local TCP port, from 1024 to 65535. Give simultaneous clients different ports. |
+| `bindAddress` | `127.0.0.1` | IPv4 listener address. Use a specific private LAN address or `0.0.0.0` to accept LAN connections. |
+| `port` | `8765` | TCP port, from 1024 to 65535. Give simultaneous clients different ports. |
 | `bearerToken` | Generated | 32–256 URL-safe letters, digits, `_`, or `-`. |
 | `requestTimeoutSeconds` | `30` | Maximum tool request wait, from 1 to 120 seconds. |
 
 Restart Minecraft after changing configuration. To rotate the token, close Minecraft, remove only the `bearerToken` property, and restart; reconnect with the new generated value. Invalid configuration or an occupied port leaves the bridge unavailable; inspect the current Minecraft log.
+
+### Connect from another LAN device
+
+1. On the Minecraft computer, close the game and set `"bindAddress": "0.0.0.0"` in its `config/mcptest.json` to listen on all IPv4 interfaces. Alternatively, set that computer's specific private LAN IPv4 address to listen on only that interface. Existing configurations without this field keep the localhost-only default.
+2. Restart Minecraft. On the other device, use the Minecraft computer's actual LAN address in the MCP URL, for example `http://192.168.1.50:8765/mcp`, with the same `Authorization: Bearer ...` token. `0.0.0.0` is a listener setting, not a destination URL.
+3. If the connection is blocked by the host firewall, allow inbound TCP on the configured port for the private network/local subnet. The mod does not change firewall rules.
+
+LAN connections support literal IPv4 addresses in `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, and `169.254.0.0/16`; loopback remains supported. Hostnames, IPv6, and public-address access are not supported. Requests must name the listener's actual destination IP and port in `Host`; browser requests with an unrelated `Origin` are rejected. Use a trusted LAN: HTTP carries the bearer token and game data without encryption, and this endpoint is not intended for public port forwarding.
 
 ## Optional command-line helper
 
@@ -63,6 +72,14 @@ python examples/mcp-client.py --config run/config/mcptest.json --tool minecraft_
 ```
 
 Replace `--config` with the actual game configuration path for an installed client. Screenshot files must not already exist. The helper prints structured results, suppresses image base64 in console output, and returns a nonzero exit code for protocol or tool failures. It is a diagnostic CLI, not a persistent MCP stdio server. Interrupting it with Ctrl+C attempts to close its session and cancel pending work.
+
+From another device, keep a private local copy of the connection configuration containing the same `port` and `bearerToken`, and supply the Minecraft computer's address explicitly:
+
+```powershell
+python examples/mcp-client.py --config /path/to/private/mcptest.json --host 192.168.1.50 --tool minecraft_status
+```
+
+`--host` defaults to `127.0.0.1`; it does not use `bindAddress` as a destination. It accepts concrete IPv4 loopback/private/link-local addresses and connects directly without proxies or redirects.
 
 ## Operating behavior
 
@@ -89,6 +106,8 @@ The following workflow still needs to be verified in a real Minecraft client; a 
 5. **Cleanup:** repeat an active hold while opening a GUI, leaving the world, and deleting the MCP session. Confirm no input remains held. Reconnect, verify screenshot capture still works, and check the current run's Minecraft log for errors.
 
 Keep results from the current run, including screenshots and relevant log excerpts. Test both single-player and the intended multiplayer server when server acceptance or synchronization matters.
+
+For LAN verification, repeat inspection and screenshot capture from a second device, confirm an invalid token is rejected, and test cancellation/session deletion remotely. Returning `bindAddress` to `127.0.0.1` and restarting should make the endpoint unavailable to the second device while preserving local access.
 
 ## Mapping license
 

@@ -6,6 +6,10 @@ All tools use the `minecraft_` prefix. `tools/list` is the authoritative machine
 
 The endpoint is `http://127.0.0.1:8765/mcp` by default. Send `Authorization: Bearer <token>`, `Content-Type: application/json`, and `Accept: application/json, text/event-stream` on POST requests.
 
+For another device on the LAN, configure the Minecraft instance's `bindAddress` as `0.0.0.0` or its specific private IPv4 address and restart. Connect to `http://<minecraft-computer-lan-ip>:<port>/mcp` using the same token. The Python helper accepts `--host <minecraft-computer-lan-ip>` and reads credentials from a local `--config` file. See [LAN setup](../README.md#connect-from-another-lan-device).
+
+The listener accepts IPv4 loopback, RFC 1918 private, and link-local peers. `Host` must match the destination interface IP and configured port (`localhost` is also accepted on loopback); a supplied `Origin` must match that local endpoint. Use literal IPv4 addresses, not hostnames or `0.0.0.0`, as remote destinations. Authentication, session handling, and all tool schemas are the same for local and LAN callers.
+
 1. Send a JSON-RPC `initialize` request with a protocol version, `capabilities: {}`, and `clientInfo` containing `name` and `version`.
 2. Store the response's `Mcp-Session-Id` HTTP header and negotiated `protocolVersion`.
 3. Include `Mcp-Session-Id` and `Mcp-Protocol-Version` on subsequent requests, then send the `notifications/initialized` notification.

@@ -47,7 +47,8 @@ public class MCPTest {
                 bridge = new ClientBridge(Minecraft.getInstance());
                 server = new McpServer(config, bridge);
                 server.start();
-                LOGGER.info("MCP Test listening at http://127.0.0.1:{}/mcp; bearer token is in config/mcptest.json", config.port());
+                LOGGER.info("MCP Test listening on {}:{} at /mcp; bearer token is in config/mcptest.json", config.bindAddress(), config.port());
+                if (config.bindAddress().equals("0.0.0.0")) LOGGER.info("LAN clients should connect using this computer's private IPv4 address, not 0.0.0.0");
             } catch (Exception ex) {
                 if (server != null) server.close();
                 if (bridge != null) bridge.close();

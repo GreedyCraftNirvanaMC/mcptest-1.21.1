@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add opt-in IPv4 LAN access through `bindAddress`, retaining localhost-only defaults and bearer authentication.
+- Validate LAN peers and destination Host/Origin headers, and add `--host` to the Python diagnostic client.
+
 ## 1.0.0
 
 - Add an authenticated, loopback-only MCP Streamable HTTP endpoint for the Minecraft 1.21.1 NeoForge client.
